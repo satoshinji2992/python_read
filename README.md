@@ -71,6 +71,7 @@ python python_read.py 你的文件.py --function 函数名 --debug
    - 调用的其他函数
    - 变量使用情况
 4. **潜在问题**：检测到的代码潜在问题列表
+5. **分析报告示例**: [使用该程序分析自己](./python_read_analysis.md)
 
 ### 调试建议
 
