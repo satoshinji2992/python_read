@@ -6,6 +6,9 @@ import openai
 import sys
 from typing import Dict, List, Tuple, Any, Optional
 import argparse
+import asyncio
+import aiohttp
+import json
 
 
 # 设置OpenAI API密钥
@@ -37,6 +40,12 @@ class PythonCodeAnalyzer:
             with open(self.file_path, 'r', encoding='utf-8') as file:
                 self.source_code = file.read()
             self.tree = ast.parse(self.source_code)
+            
+            # 确保当前目录加入 sys.path，以便能够导入同目录下的模块
+            script_dir = os.path.dirname(os.path.abspath(self.file_path))
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+                
             return True
         except Exception as e:
             print(f"无法加载文件: {e}")
@@ -44,6 +53,8 @@ class PythonCodeAnalyzer:
             
     def extract_imports(self):
         """提取导入的模块"""
+        self.imports = []  # 清空之前的导入列表
+        
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Import):
                 for name in node.names:
@@ -51,45 +62,83 @@ class PythonCodeAnalyzer:
             elif isinstance(node, ast.ImportFrom):
                 module = node.module
                 for name in node.names:
-                    self.imports.append(f"{module}.{name.name}")
-        return self.imports
+                    if module:
+                        self.imports.append(f"{module}.{name.name}")
+                    else:
+                        # 处理相对导入，如 from . import x
+                        self.imports.append(name.name)
         
+        # 移除重复项并排序
+        self.imports = sorted(list(set(self.imports)))
+        return self.imports
+
     def get_module_info(self):
         """获取导入模块的函数信息"""
         module_info = {}
+        
         for module_name in self.imports:
             try:
-                # 处理from x import y情况
                 if '.' in module_name:
                     parts = module_name.split('.')
-                    base_module = parts[0]
                     try:
-                        module = importlib.import_module(base_module)
-                        sub_item = module
-                        for part in parts[1:]:
+                        # 尝试导入前面的模块
+                        base_module = importlib.import_module(parts[0])
+                        # 逐级获取属性
+                        sub_item = base_module
+                        for part in parts[1:-1]:  # 不包括最后一个部分
                             sub_item = getattr(sub_item, part)
                         
-                        if inspect.ismodule(sub_item):
-                            module_info[module_name] = self._get_module_functions(sub_item)
+                        # 获取最终的子项
+                        final_item = getattr(sub_item, parts[-1])
+                        
+                        if inspect.ismodule(final_item):
+                            module_info[module_name] = self._get_module_functions(final_item)
                         else:
-                            module_info[module_name] = self._get_item_doc(sub_item)
-                    except Exception as e:
-                        module_info[module_name] = f"无法获取信息: {str(e)}"
+                            module_info[module_name] = self._get_item_doc(final_item)
+                    except (ImportError, AttributeError) as e:
+                        # 尝试直接导入完整路径
+                        try:
+                            module = importlib.import_module(module_name)
+                            module_info[module_name] = self._get_module_functions(module)
+                        except ImportError:
+                            # 如果不行，再尝试导入父模块
+                            try:
+                                parent_module_name = '.'.join(parts[:-1])
+                                parent_module = importlib.import_module(parent_module_name)
+                                sub_item = getattr(parent_module, parts[-1])
+                                
+                                if inspect.ismodule(sub_item):
+                                    module_info[module_name] = self._get_module_functions(sub_item)
+                                else:
+                                    module_info[module_name] = self._get_item_doc(sub_item)
+                            except Exception as inner_e:
+                                module_info[module_name] = f"无法导入: {str(inner_e)}"
                 else:
-                    # 直接导入模块情况
+                    # 直接导入模块
                     module = importlib.import_module(module_name)
                     module_info[module_name] = self._get_module_functions(module)
             except Exception as e:
                 module_info[module_name] = f"无法导入模块: {str(e)}"
                 
         return module_info
-    
+
     def _get_module_functions(self, module):
         """获取模块中的函数信息"""
         functions = {}
-        for name, item in inspect.getmembers(module):
-            if inspect.isfunction(item) and not name.startswith('_'):
-                functions[name] = self._get_item_doc(item)
+        try:
+            for name, item in inspect.getmembers(module):
+                if inspect.isfunction(item) and not name.startswith('_'):
+                    doc = self._get_item_doc(item)
+                    # 确保doc是字符串
+                    functions[name] = str(doc) if doc is not None else "无文档字符串"
+                elif inspect.isclass(item) and not name.startswith('_'):
+                    # 类信息
+                    doc = inspect.getdoc(item)
+                    class_info = {"__doc__": str(doc) if doc is not None else "无文档字符串"}
+                    functions[f"类:{name}"] = class_info
+        except Exception as e:
+            # 捕获任何异常，返回错误信息
+            return {"错误": f"获取模块函数时出错: {str(e)}"}
         return functions
     
     def _get_item_doc(self, item):
@@ -138,163 +187,119 @@ class PythonCodeAnalyzer:
             return None
         return ast.unparse(annotation)
     
-    def generate_function_docs(self):
-        """使用OpenAI生成函数文档，将模块信息作为上下文"""
+    async def generate_function_docs(self):
+        """使用OpenAI生成函数文档，先做一遍简单分析作为上下文，再异步详细分析每个函数"""
         # 首先构建模块信息上下文
         module_context = "导入的模块及其功能:\n"
         for module_name, info in self.get_module_info().items():
             module_context += f"- {module_name}:\n"
             if isinstance(info, dict):
                 for func_name, doc in info.items():
-                    module_context += f"  - {func_name}: {doc[:100]}...\n"
+                    # 确保doc是字符串
+                    doc_str = str(doc) if doc is not None else "无文档"
+                    # 安全地截取前100个字符
+                    doc_preview = doc_str[:100] + "..." if len(doc_str) > 100 else doc_str
+                    module_context += f"  - {func_name}: {doc_preview}\n"
             else:
-                module_context += f"  {info[:100]}...\n"
+                # 确保info是字符串
+                info_str = str(info) if info is not None else "无信息"
+                # 安全地截取前100个字符
+                info_preview = info_str[:100] + "..." if len(info_str) > 100 else info_str
+                module_context += f"  {info_preview}\n"
         
-        # 已分析的函数文档，作为上下文累积
-        analyzed_functions_context = ""
-        
-        for i, function in enumerate(self.functions):
-            try:
-                prompt = f"""
-                分析以下Python函数并提供简洁的功能说明：
-                
-                ```python
-                {function['body']}
-                ```
-                
-                模块上下文信息:
-                {module_context}
-                
-                之前分析的函数:
-                {analyzed_functions_context}
-                
-                请提供：
-                1. 函数的主要功能
-                2. 参数的用途
-                3. 返回值的含义
-                不要包含代码示例，只需提供功能描述。
-                """
-                
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "你是一个Python代码分析专家，擅长分析代码并提供简洁准确的功能说明。分析时应当考虑模块上下文与之前分析过的函数。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=500
-                )
-                
-                self.functions[i]['generated_doc'] = response.choices[0].message.content.strip()
-                print(f"已生成 {function['name']} 的文档")
-                
-                # 将当前分析的函数添加到上下文中，供后续函数分析使用
-                analyzed_functions_context += f"- {function['name']}: {self.functions[i]['generated_doc'][:150]}...\n"
-                
-            except Exception as e:
-                self.functions[i]['generated_doc'] = f"无法生成文档: {str(e)}"
-                print(f"生成 {function['name']} 文档时出错: {e}")
-        
-        return self.functions
-    
-    def generate_function_docs_two_pass(self):
-        """使用两遍扫描方法生成函数文档"""
-        # 首先构建模块信息上下文
-        module_context = "导入的模块及其功能:\n"
-        for module_name, info in self.get_module_info().items():
-            module_context += f"- {module_name}:\n"
-            if isinstance(info, dict):
-                for func_name, doc in info.items():
-                    module_context += f"  - {func_name}: {doc[:100]}...\n"
-            else:
-                module_context += f"  {info[:100]}...\n"
-        
-        # 第一遍：生成基础文档
-        print("第一遍分析：生成基础文档...")
-        for i, function in enumerate(self.functions):
-            try:
-                prompt = f"""
-                分析以下Python函数并提供简洁的基础功能说明：
-                
-                ```python
-                {function['body']}
-                ```
-                
-                模块上下文信息:
-                {module_context}
-                
-                请提供：
-                1. 函数的主要功能
-                2. 参数的用途
-                3. 返回值的含义
-                只需简短描述，第二轮会进行更详细分析。
-                """
-                
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "你是一个Python代码分析专家，擅长简洁描述函数功能。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=250  # 第一遍使用较少token
-                )
-                
-                self.functions[i]['preliminary_doc'] = response.choices[0].message.content.strip()
-                print(f"第一遍已生成 {function['name']} 的基础文档")
-                
-            except Exception as e:
-                self.functions[i]['preliminary_doc'] = f"无法生成基础文档: {str(e)}"
-                print(f"第一遍生成 {function['name']} 文档时出错: {e}")
-        
-        # 构建完整函数上下文
-        full_functions_context = ""
+        # 第一步：生成所有函数的简要概述作为上下文
+        functions_overview = "函数概览:\n"
         for function in self.functions:
-            full_functions_context += f"- {function['name']}: {function.get('preliminary_doc', '无基础文档')[:150]}...\n"
+            # 提取函数名、参数和返回类型等基本信息
+            args_str = ", ".join([f"{arg['name']}: {arg['annotation'] or '未知类型'}" for arg in function['args']])
+            returns = function['returns'] or "未知类型"
+            docstring = function['docstring']
+            
+            # 如果有docstring，使用它；否则，基于函数名和参数猜测功能
+            if docstring:
+                brief = docstring.split("\n")[0][:150]
+            else:
+                # 基于函数名称猜测功能
+                name = function['name']
+                brief = f"函数 {name}({args_str}) -> {returns}"
+                if name.startswith("get_"):
+                    brief += "，可能用于获取数据"
+                elif name.startswith("set_"):
+                    brief += "，可能用于设置数据"
+                elif name.startswith("is_"):
+                    brief += "，可能用于检查条件"
+                elif name.startswith("create_") or name.startswith("generate_"):
+                    brief += "，可能用于创建新对象或数据"
+            
+            functions_overview += f"- {function['name']}: {brief}\n"
         
-        # 第二遍：生成更全面的文档，考虑所有函数的上下文
-        print("第二遍分析：生成详细文档...")
-        for i, function in enumerate(self.functions):
-            try:
-                prompt = f"""
-                对以下Python函数进行更深入的分析，提供详细的功能说明：
-                
-                ```python
-                {function['body']}
-                ```
-                
-                模块上下文信息:
-                {module_context}
-                
-                文件中所有函数的基础信息:
-                {full_functions_context}
-                
-                请提供更详细的：
-                1. 函数的主要功能和用途
-                2. 参数的详细解释
-                3. 返回值的含义和用途
-                4. 与其他函数的关联和依赖关系
-                
-                基于第一轮分析的初步结果:
-                {function.get('preliminary_doc', '无基础文档')}
-                """
-                
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "你是一个Python代码分析专家，擅长深入分析代码并理解函数之间的关系。在第二轮分析中，你应当参考所有函数的基础信息，提供更全面和准确的功能说明。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=500
-                )
-                
-                self.functions[i]['generated_doc'] = response.choices[0].message.content.strip()
-                print(f"第二遍已生成 {function['name']} 的详细文档")
-                
-            except Exception as e:
-                # 如果第二遍失败，使用第一遍的结果
-                self.functions[i]['generated_doc'] = self.functions[i].get('preliminary_doc', f"无法生成文档: {str(e)}")
-                print(f"第二遍生成 {function['name']} 文档时出错: {e}")
+        # 第二步：异步并行生成每个函数的详细文档
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for i, function in enumerate(self.functions):
+                task = self._generate_doc_for_function(session, i, function, module_context, functions_overview)
+                tasks.append(task)
+            
+            # 并行执行所有任务
+            await asyncio.gather(*tasks)
         
         return self.functions
+
+    async def _generate_doc_for_function(self, session, i, function, module_context, functions_overview):
+        """异步为单个函数生成详细文档"""
+        print(f"开始生成 {function['name']} 的文档...")
+        try:
+            prompt = f"""
+            分析以下Python函数并提供简洁的功能说明：
+            
+            ```python
+            {function['body']}
+            ```
+            
+            模块上下文信息:
+            {module_context}
+            
+            其他函数概览:
+            {functions_overview}
+            
+            请提供：
+            1. 函数的主要功能
+            2. 参数的用途
+            3. 返回值的含义
+            不要包含代码示例，只需提供功能描述。
+            """
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {API_KEY}"
+            }
+            
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "你是一个Python代码分析专家，擅长分析代码并提供简洁准确的功能说明。分析时应当考虑模块上下文与其他函数的概览。"},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 500
+            }
+            
+            async with session.post(
+                f"{API_BASE_URL}/v1/chat/completions", 
+                headers=headers, 
+                json=payload
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    self.functions[i]['generated_doc'] = result['choices'][0]['message']['content'].strip()
+                    print(f"已生成 {function['name']} 的文档")
+                else:
+                    error_text = await response.text()
+                    self.functions[i]['generated_doc'] = f"API请求失败: {response.status}, {error_text}"
+                    print(f"生成 {function['name']} 文档时API请求失败: {response.status}")
+        
+        except Exception as e:
+            self.functions[i]['generated_doc'] = f"无法生成文档: {str(e)}"
+            print(f"生成 {function['name']} 文档时出错: {e}")
     
     def format_function_declaration(self, function):
         """格式化函数声明"""
@@ -457,7 +462,7 @@ class PythonCodeAnalyzer:
         """生成分析报告"""
         if not self.load_file():
             return "无法分析文件"
-            
+                
         print("分析导入模块...")
         imports = self.extract_imports()
         module_info = self.get_module_info()
@@ -465,19 +470,12 @@ class PythonCodeAnalyzer:
         print("提取函数信息...")
         functions = self.extract_functions()
         
-        if self.mode == 0:
-            print("生成函数文档...")
-            self.generate_function_docs() 
+        print("生成函数文档...")
+        # 使用异步方法生成文档
+        asyncio.run(self.generate_function_docs()) 
 
-        if self.mode == 1:
-            print("生成函数文档（两遍分析）...")
-            self.generate_function_docs_two_pass()
-
-
-        
         # 生成报告
         report = f"# Python文件分析报告: {os.path.basename(self.file_path)}\n\n"
-        
         
         # 模块部分 - 简化版
         report += "## 导入的模块\n\n"
@@ -521,17 +519,17 @@ class PythonCodeAnalyzer:
                     report += f"- `{call}`\n"
             
             # 在函数部分添加变量信息
-        variable_info = self.analyze_variables(function['name'])
-        if variable_info.get(function['name']):
-            report += "**变量使用:**\n\n"
-            report += "| 变量名 | 推断类型 | 定义行号 |\n"
-            report += "|--------|----------|----------|\n"
-            for var_name, var_data in variable_info[function['name']].items():
-                report += f"| {var_name} | {var_data['type']} | {var_data['line']} |\n"
+            variable_info = self.analyze_variables(function['name'])
+            if variable_info.get(function['name']):
+                report += "\n**变量使用:**\n\n"
+                report += "| 变量名 | 推断类型 | 定义行号 |\n"
+                report += "|--------|----------|----------|\n"
+                for var_name, var_data in variable_info[function['name']].items():
+                    report += f"| {var_name} | {var_data['type']} | {var_data['line']} |\n"
             
-            report += "---\n\n"
+            report += "\n---\n\n"
         
-                # 在报告末尾添加问题检测部分
+        # 在报告末尾添加问题检测部分
         issues = self.detect_potential_issues()
         if issues:
             report += "## 潜在问题\n\n"
@@ -539,20 +537,80 @@ class PythonCodeAnalyzer:
             report += "|------|----------|----------|\n"
             for issue in issues:
                 report += f"| {issue['function']} | {issue['issue']} | {issue['severity']} |\n"
-            
-            
+        
+        # 使用AI生成程序摘要并插入到报告开头
+        program_summary = self._generate_ai_summary(os.path.basename(self.file_path), report)
+        
+        # 将摘要插入到报告开头
+        if program_summary:
+            report = f"# Python文件分析报告: {os.path.basename(self.file_path)}\n\n" + \
+                    f"## 程序概述\n\n{program_summary}\n\n" + \
+                    report.split("# Python文件分析报告:")[1]
+                    
         return report
+
+    def _generate_ai_summary(self, filename, report):
+        """使用OpenAI直接生成程序摘要"""
+        try:
+            # 如果API密钥不可用，直接返回None
+            if not API_KEY:
+                print("未设置API_KEY，跳过生成AI摘要")
+                return None
+                
+            print("正在生成程序概述...")
+            
+            # 限制报告长度，避免超出token限制
+            max_report_length = 8000  # 根据实际模型能力调整
+            if len(report) > max_report_length:
+                # 提取关键部分
+                report_parts = report.split('\n\n')
+                # 保留开头(通常包含模块和主要功能信息)和一些关键部分
+                truncated_report = '\n\n'.join(report_parts[:15])
+                if len(truncated_report) > max_report_length:
+                    truncated_report = truncated_report[:max_report_length] + "..."
+            else:
+                truncated_report = report
+            
+            prompt = f"""
+            以下是Python文件 {filename} 的分析报告。请基于此报告生成一个简洁的程序概述，包括:
+            1. 程序的主要功能和用途
+            2. 核心组件和关键函数
+            3. 主要依赖模块
+            4. 程序的架构特点
+            5. 可能的应用场景
+            
+            概述应该简洁清晰，不超过300字，格式为Markdown。
+            
+            分析报告:
+            {truncated_report}
+            """
+            
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一个Python代码分析专家，擅长理解程序结构并提供简洁准确的概述。"},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=800
+            )
+            
+            ai_summary = response.choices[0].message.content.strip()
+            print("已生成程序概述")
+            return ai_summary
+            
+        except Exception as e:
+            print(f"生成程序概述时出错: {e}")
+            return None
 
 def main():
     parser = argparse.ArgumentParser(description='Python代码分析工具')
     parser.add_argument('file_path', help='要分析的Python文件路径')
-    parser.add_argument('--mode', type=int, default=0, help='分析模式 (0或1)')
     parser.add_argument('--function', help='指定要分析的函数名')
     parser.add_argument('--debug', action='store_true', help='生成调试建议')
     
     args = parser.parse_args()
     
-    analyzer = PythonCodeAnalyzer(args.file_path, MODEL_NAME, args.mode)
+    analyzer = PythonCodeAnalyzer(args.file_path, MODEL_NAME)
     
     if args.debug and args.function:
         # 生成调试建议
