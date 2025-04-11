@@ -32,8 +32,8 @@ pip install openai
 
 ```bash
 export API_KEY="你的OpenAI API密钥"
-export BASE_URL="https://api.openai.com"  # 可选，如使用非默认API端点
-export MODEL_NAME="gpt-3.5-turbo"  # 可选，指定使用的模型
+export BASE_URL=""https://api.deepseek.com""  # 可选，如使用非默认API端点
+export MODEL_NAME="deepseek-chat"  # 可选，指定使用的模型
 ```
 
 ### 基本用法
@@ -73,6 +73,7 @@ python python_read.py your_file.py --function function_name --debug
    - 调用的其他函数
    - 变量使用情况
 3. **潜在问题**：检测到的代码潜在问题列表
+4. **报告示例**: [使用说明](./python_read_analysis.md)
 
 ### 调试建议
 

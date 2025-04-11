@@ -11,7 +11,7 @@ import argparse
 # 设置OpenAI API密钥
 
 API_KEY = os.getenv("API_KEY")
-API_BASE_URL = os.getenv("BASE_URL", "https://api.openai.com")
+API_BASE_URL = os.getenv("BASE_URL", "https://api.deepseek.com")
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-chat")
 
 client = openai.OpenAI(
