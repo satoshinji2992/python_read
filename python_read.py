@@ -24,7 +24,7 @@ client = openai.OpenAI(
 
 
 class PythonCodeAnalyzer:
-    def __init__(self, file_path: str, model: str = "deepseek-chat", mode: int = 0):
+    def __init__(self, file_path: str, model: str = "deepseek-chat"):
         """初始化Python代码分析器"""
         self.file_path = file_path
         self.model = model
@@ -32,7 +32,6 @@ class PythonCodeAnalyzer:
         self.tree = None
         self.imports = []
         self.functions = []
-        self.mode = mode
         
     def load_file(self):
         """加载Python文件"""
@@ -387,82 +386,79 @@ class PythonCodeAnalyzer:
         
         return call_graph
     
-    def detect_potential_issues(self):
-        """检测代码中可能存在的问题"""
-        issues = []
-        
-        # 检查所有函数
-        for function in self.functions:
-            function_node = None
-            for node in ast.walk(self.tree):
-                if isinstance(node, ast.FunctionDef) and node.name == function['name']:
-                    function_node = node
-                    break
-                    
-            if function_node:
-                # 检查异常处理
-                has_try = False
-                for node in ast.walk(function_node):
-                    if isinstance(node, ast.Try):
-                        has_try = True
-                        break
-                
-                # 检查是否有返回值
-                has_return = False
-                for node in ast.walk(function_node):
-                    if isinstance(node, ast.Return):
-                        has_return = True
-                        break
-                
-                # 如果函数名称暗示返回值但没有return语句
-                if (function['name'].startswith('get_') or 
-                    function['name'].startswith('create_') or 
-                    function['name'].startswith('generate_')) and not has_return:
-                    issues.append({
-                        'function': function['name'],
-                        'issue': '函数名称暗示应该返回值，但没有发现return语句',
-                        'severity': 'warning'
-                    })
-                
-                # 检查是否有未使用的变量
-                # ...
-        
-        return issues
+    async def analyze_function_issues(self, function_data):
+        """使用AI分析函数的潜在问题并提供修改建议"""
+        try:
+            function_name = function_data['name']
+            function_code = function_data['body']
+            function_signature = self.format_function_declaration(function_data)
+            docstring = function_data.get('docstring', "无文档字符串")
+            
+            prompt = f"""
+    分析以下Python函数的潜在问题并提供具体的修改建议:
+
+    函数签名：
+    {function_signature}
+
+    函数文档：
+    {docstring}
+
+    函数代码：
+    ```python
+    {function_code}
+    请识别以下可能的问题并提供改进建议:
+
+      1.函数设计问题（命名、参数、返回值等）
+      2.代码风格与最佳实践问题
+      3.可能的bug或错误处理缺陷
+      4.性能优化机会
+      5.文档完整性
+      以Markdown格式输出，问题描述应简洁明了，修改建议应具体可行。 """
+                # 使用OpenAI API生成分析结果
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一位Python代码分析专家，善于发现代码中的潜在问题并提供改进建议。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            
+            analysis = response.choices[0].message.content.strip()
+            print(f"分析完成: {function_name}")
+            return {
+                "function": function_name,
+                "analysis": analysis
+            }
+        except Exception as e:
+            return {
+                "function": function_data.get('name', 'unknown'),
+                "analysis": f"分析过程中出错: {str(e)}"
+            }
     
-    def generate_debugging_suggestions(self, function_name):
-        """为特定函数生成调试建议"""
-        function = next((f for f in self.functions if f['name'] == function_name), None)
-        if not function:
-            return f"找不到函数 {function_name}"
-        
-        suggestions = [
-            f"# 调试 {function_name} 的建议",
-            "",
-            "## 插入日志语句",
-            "```python",
-            f"def {function_name}({', '.join(arg['name'] for arg in function['args'])}):",
-            "    print(f\"进入 {function_name}\")",
-        ]
-        
-        # 为每个参数添加日志
-        for arg in function['args']:
-            suggestions.append(f"    print(f\"{arg['name']} = {{{arg['name']}}}\")")
-        
-        suggestions.extend([
-            "    # ... 原函数代码 ...",
-            "    result = original_calculation",
-            "    print(f\"函数 {function_name} 返回值 = {result}\")",
-            "    return result",
-            "```"
-        ])
-        
-        return "\n".join(suggestions)
+    async def analyze_all_functions_issues(self): 
+        """异步分析所有函数的潜在问题并提供修改建议""" 
+        if not self.functions: print("正在提取函数信息...") 
+        self.extract_functions()
+        print(f"开始分析 {len(self.functions)} 个函数的潜在问题...")
+
+        tasks = []
+        for function_data in self.functions:
+            tasks.append(self.analyze_function_issues(function_data))
+
+        # 同时执行所有分析任务（不设置并发限制）
+        results = await asyncio.gather(*tasks)
+
+        print(f"函数分析完成!")
+        return results
+            
     
     def generate_report(self):
         """生成分析报告"""
         if not self.load_file():
             return "无法分析文件"
-                
+                    
         print("分析导入模块...")
         imports = self.extract_imports()
         module_info = self.get_module_info()
@@ -471,8 +467,27 @@ class PythonCodeAnalyzer:
         functions = self.extract_functions()
         
         print("生成函数文档...")
-        # 使用异步方法生成文档
-        asyncio.run(self.generate_function_docs()) 
+        try:
+            # 初始化所有函数的generated_doc字段，避免后续报错
+            for function in self.functions:
+                function['generated_doc'] = "生成中..."
+                
+            # 使用异步方法生成文档
+            asyncio.run(self.generate_function_docs()) 
+        except Exception as e:
+            print(f"生成函数文档时出错: {e}")
+            # 确保每个函数都有generated_doc字段
+            for function in self.functions:
+                if 'generated_doc' not in function:
+                    function['generated_doc'] = "文档生成失败"
+
+        print("正在分析函数的潜在问题...")
+        try:
+            # 使用新的异步函数分析功能，同样在同步函数中运行
+            function_analyses = asyncio.run(self.analyze_all_functions_issues())
+        except Exception as e:
+            print(f"分析函数问题时出错: {e}")
+            function_analyses = []  # 如果分析失败，使用空列表
 
         # 生成报告
         report = f"# Python文件分析报告: {os.path.basename(self.file_path)}\n\n"
@@ -506,7 +521,9 @@ class PythonCodeAnalyzer:
             if function['returns']:
                 report += f"\n**返回值:** `{function['returns']}`\n\n"
             
-            report += f"**功能说明:**\n\n{function['generated_doc']}\n\n"
+            # 安全访问generated_doc字段
+            doc = function.get('generated_doc', "未能生成功能说明")
+            report += f"**功能说明:**\n\n{doc}\n\n"
             
             if function['docstring']:
                 report += f"**原始文档:**\n\n{function['docstring']}\n\n"
@@ -529,23 +546,25 @@ class PythonCodeAnalyzer:
             
             report += "\n---\n\n"
         
-        # 在报告末尾添加问题检测部分
-        issues = self.detect_potential_issues()
-        if issues:
-            report += "## 潜在问题\n\n"
-            report += "| 函数 | 问题描述 | 严重程度 |\n"
-            report += "|------|----------|----------|\n"
-            for issue in issues:
-                report += f"| {issue['function']} | {issue['issue']} | {issue['severity']} |\n"
+        # 在报告末尾添加问题分析和改进建议部分
+        if function_analyses:
+            report += "## 函数问题分析与改进建议\n\n"
+            for analysis in function_analyses:
+                report += f"### {analysis['function']}\n\n"
+                report += analysis['analysis']
+                report += "\n\n---\n\n"
         
-        # 使用AI生成程序摘要并插入到报告开头
-        program_summary = self._generate_ai_summary(os.path.basename(self.file_path), report)
-        
-        # 将摘要插入到报告开头
-        if program_summary:
-            report = f"# Python文件分析报告: {os.path.basename(self.file_path)}\n\n" + \
-                    f"## 程序概述\n\n{program_summary}\n\n" + \
-                    report.split("# Python文件分析报告:")[1]
+        # 尝试生成程序摘要
+        try:
+            program_summary = asyncio.run(self._generate_ai_summary(os.path.basename(self.file_path), report))
+            
+            # 将摘要插入到报告开头
+            if program_summary:
+                report = f"# Python文件分析报告: {os.path.basename(self.file_path)}\n\n" + \
+                        f"## 程序概述\n\n{program_summary}\n\n" + \
+                        report.split("# Python文件分析报告:")[1]
+        except Exception as e:
+            print(f"生成程序摘要时出错: {e}")
                     
         return report
 
@@ -605,25 +624,17 @@ class PythonCodeAnalyzer:
 def main():
     parser = argparse.ArgumentParser(description='Python代码分析工具')
     parser.add_argument('file_path', help='要分析的Python文件路径')
-    parser.add_argument('--function', help='指定要分析的函数名')
-    parser.add_argument('--debug', action='store_true', help='生成调试建议')
     
     args = parser.parse_args()
     
     analyzer = PythonCodeAnalyzer(args.file_path, MODEL_NAME)
     
-    if args.debug and args.function:
-        # 生成调试建议
-        suggestions = analyzer.generate_debugging_suggestions(args.function)
-        print(suggestions)
-    else:
-        # 生成完整报告
-        report = analyzer.generate_report()
-        # 保存报告
-        output_file = f"{os.path.splitext(args.file_path)[0]}_analysis.md"
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(report)
-        print(f"分析完成! 报告已保存至: {output_file}")
+    report = analyzer.generate_report()
+    # 保存报告
+    output_file = f"{os.path.splitext(args.file_path)[0]}_analysis.md"
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(report)
+    print(f"分析完成! 报告已保存至: {output_file}")
 
 if __name__ == "__main__":
     main()
