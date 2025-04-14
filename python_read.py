@@ -390,7 +390,7 @@ class PythonCodeAnalyzer:
         """生成分析报告（异步版本）"""
         if not self.load_file():
             return "无法分析文件"
-                    
+                
         print("分析导入模块...")
         imports = self.extract_imports()
         module_info = self.get_module_info()
@@ -413,12 +413,61 @@ class PythonCodeAnalyzer:
                 if 'generated_doc' not in function:
                     function['generated_doc'] = "文档生成失败"
 
-        # 生成报告部分保持不变...
+        # 生成报告
         report = f"# Python文件分析报告: {os.path.basename(self.file_path)}\n\n"
         
-        # 模块部分 - 简化版
+        # 模块部分 - 添加完整的模块信息表格
         report += "## 导入的模块\n\n"
-        # ...其余报告生成代码保持不变...
+        report += "| 模块 | 类型 | 主要功能/函数 |\n"
+        report += "|------|------|---------------|\n"
+        for module_name, info in module_info.items():
+            if isinstance(info, dict):
+                funcs = ", ".join(list(info.keys())[:3])
+                if len(info) > 3:
+                    funcs += f"... (共{len(info)}个函数)"
+                report += f"| {module_name} | 模块 | {funcs} |\n"
+            else:
+                short_info = info[:50] + "..." if len(info) > 50 else info
+                report += f"| {module_name} | 其他 | {short_info} |\n"
+        
+        # 函数部分
+        report += "## 文件中的函数\n\n"
+        for function in self.functions:
+            declaration = self.format_function_declaration(function)
+            report += f"### {function['name']}\n\n"
+            report += f"```python\n{declaration}\n```\n\n"
+            
+            report += "**参数:**\n\n"
+            for arg in function['args']:
+                annotation = f": {arg['annotation']}" if arg['annotation'] else ""
+                report += f"- `{arg['name']}{annotation}`\n"
+            
+            if function['returns']:
+                report += f"\n**返回值:** `{function['returns']}`\n\n"
+            
+            # 添加生成的函数文档
+            report += f"**功能说明:**\n\n{function.get('generated_doc', '未能生成功能说明')}\n\n"
+            
+            if function['docstring']:
+                report += f"**原始文档:**\n\n{function['docstring']}\n\n"
+            
+            # 添加函数调用信息
+            call_graph = self.analyze_code_flow(function['name'])
+            if call_graph.get(function['name']):
+                report += "**调用的其他函数:**\n\n"
+                for call in call_graph[function['name']]:
+                    report += f"- `{call}`\n"
+            
+            # 添加变量信息
+            variable_info = self.analyze_variables(function['name'])
+            if variable_info.get(function['name']):
+                report += "\n**变量使用:**\n\n"
+                report += "| 变量名 | 推断类型 | 定义行号 |\n"
+                report += "|--------|----------|----------|\n"
+                for var_name, var_data in variable_info[function['name']].items():
+                    report += f"| {var_name} | {var_data['type']} | {var_data['line']} |\n"
+            
+            report += "\n---\n\n"
         
         # 尝试生成程序摘要（使用异步版本的摘要生成函数）
         try:
@@ -431,7 +480,7 @@ class PythonCodeAnalyzer:
                         report.split("# Python文件分析报告:")[1]
         except Exception as e:
             print(f"生成程序摘要时出错: {e}")
-                    
+                
         return report
     
     async def _generate_ai_summary_async(self, filename, report):
@@ -509,64 +558,21 @@ class PythonCodeAnalyzer:
         except Exception as e:
             print(f"生成程序概述时出错: {e}")
             return None
-
-    def _generate_ai_summary(self, filename, report):
-        """使用OpenAI直接生成程序摘要"""
+        
+    def generate_report(self):
+        """生成分析报告（同步版本）"""
         try:
-            # 如果API密钥不可用，直接返回None
-            if not API_KEY:
-                print("未设置API_KEY，跳过生成AI摘要")
-                return None
-                
-            print("正在生成程序概述...")
-            
-            # 限制报告长度，避免超出token限制
-            max_report_length = 8000  # 根据实际模型能力调整
-            if len(report) > max_report_length:
-                # 提取关键部分
-                report_parts = report.split('\n\n')
-                # 保留开头(通常包含模块和主要功能信息)和一些关键部分
-                truncated_report = '\n\n'.join(report_parts[:15])
-                if len(truncated_report) > max_report_length:
-                    truncated_report = truncated_report[:max_report_length] + "..."
+            # 使用asyncio.run运行异步版本
+            return asyncio.run(self.generate_report_async())
+        except RuntimeError as e:
+            # 处理"Event loop is already running"错误
+            if "Event loop is already running" in str(e):
+                print("警告: 在异步环境中调用同步方法，请考虑直接使用generate_report_async")
+                # 获取当前事件循环并创建新的future
+                loop = asyncio.get_event_loop()
+                return loop.run_until_complete(self.generate_report_async())
             else:
-                truncated_report = report
-            
-            prompt = f"""
-            以下是Python文件 {filename} 的分析报告和程序源码。请基于此报告生成一个简洁的程序概述，包括:
-            1. 程序的主要功能和用途
-            2. 核心组件和关键函数
-            3. 主要依赖模块
-            4. 程序的架构特点
-            5. 可能的应用场景
-            
-            概述应该简洁清晰，不超过300字，格式为Markdown。
-            
-            分析报告:
-            {truncated_report}
-
-            python脚本:
-            ```python
-            {self.source_code}
-            ```
-            """
-            
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "你是一个Python代码分析专家，擅长理解程序结构并提供简洁准确的概述。"},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=800
-            )
-            
-            ai_summary = response.choices[0].message.content.strip()
-            print("已生成程序概述")
-            return ai_summary
-            
-        except Exception as e:
-            print(f"生成程序概述时出错: {e}")
-            return None
+                raise e
 
 async def analyze_python_file_async(file_path, model=MODEL_NAME):
         """异步分析单个Python文件"""
@@ -596,26 +602,5 @@ async def async_main():
     
     return result
 
-def main():
-    parser = argparse.ArgumentParser(description='Python代码分析工具')
-    parser.add_argument('file_path', help='要分析的Python文件路径')
-    
-    args = parser.parse_args()
-    
-    # 保持原有的同步方式
-    analyzer = PythonCodeAnalyzer(args.file_path, MODEL_NAME)
-    
-    report = analyzer.generate_report()
-    # 保存报告
-    output_file = f"{os.path.splitext(args.file_path)[0]}_analysis.md"
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(report)
-    print(f"分析完成! 报告已保存至: {output_file}")
-
 if __name__ == "__main__":
-    main()
-    # 如果要使用异步版本，取消下面的注释
-    # asyncio.run(async_main())
-
-if __name__ == "__main__":
-    main()
+    asyncio.run(async_main())
