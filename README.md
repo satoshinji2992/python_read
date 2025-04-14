@@ -1,107 +1,135 @@
-# Python代码分析器
+# 代码仓库分析工具 (repo_read)
 
-一个强大的Python代码分析工具，可以对Python源码进行深入分析，生成详细的文档和调试建议。该工具利用AI API，为源代码提供智能化解析和文档生成服务。
 
-## 功能特点
 
-- **代码结构分析**：解析Python文件的结构，包括导入模块、函数定义等
-- **文档生成**：自动为函数生成详细文档，包括功能描述、参数用途和返回值含义
-- **调试建议**：生成有针对性的调试建议，帮助开发者排查问题
-- **变量分析**：追踪函数中的变量定义和使用情况
-- **调用关系分析**：分析函数之间的调用关系
-- **问题检测**：自动检测代码中可能存在的潜在问题（如命名与行为不一致等）
+一个智能的代码仓库分析工具，使用REACT(Reasoning, Acting, and Reflecting)方法自动分析Python代码仓库，生成详细的分析报告和改进建议。特别适合分析AI生成的代码项目，包括深度学习模型实现。**仓库理解还在施工中**
+
+## 特性
+
+- 🧠 **REACT方法**: 使用思考、行动、反思三阶段策略自动分析代码库
+- 🔍 **智能优先级排序**: 自动识别入口点文件并优化分析顺序
+- ⚡ **异步并行分析**: 通过异步IO加速分析过程，支持并发控制
+- 📊 **全面分析报告**: 生成函数文档、代码流程分析和变量信息
+- 🐞 **调试建议**: 使用AI识别潜在问题并提供具体修复方案
+- 🔗 **依赖关系追踪**: 构建模块间依赖图和函数调用关系
+- 📑 **仓库级报告**: 提供整个仓库的概览和关键见解
+- 🧮 **深度学习代码支持**: 特别优化用于分析深度学习模型实现
 
 ## 安装
 
-### 前提条件
-
-- Python 3.6+
-- API密钥（支持OpenAI或DeepSeek等大模型API）
-
-### 依赖安装
-
+1. 克隆仓库:
 ```bash
-pip install openai aiohttp
+git clone https://github.com/yourusername/repo_read.git
+cd repo_read
+```
+
+2. 安装依赖:
+```bash
+pip install -r requirements.txt
+```
+
+3. 设置环境变量:
+```bash
+# 设置必要的API密钥(支持OpenAI API和兼容格式的API)
+export API_KEY="your_api_key_here"
+export BASE_URL="https://api.deepseek.com"  # 或其他兼容OpenAI API的服务
+export MODEL_NAME="deepseek-chat"  # 或其他支持的模型
 ```
 
 ## 使用方法
 
-### 环境变量设置
-
-在使用之前，需要设置以下环境变量：
-
-```bash
-export API_KEY="你的API密钥"
-export BASE_URL="https://api.deepseek.com"  # 可选，如使用非默认API端点
-export MODEL_NAME="deepseek-chat"  # 可选，指定使用的模型
-```
-
 ### 基本用法
 
-分析Python文件并生成报告：
-
+分析整个代码仓库:
 ```bash
-python python_read.py 路径/到/你的文件.py
+python repo_read.py /path/to/your/repository
 ```
 
 ### 高级选项
 
 ```bash
-# 只分析特定函数
-python python_read.py 你的文件.py --function 函数名
+# 指定输出目录
+python repo_read.py /path/to/repo --output /path/to/output_dir
 
-# 生成特定函数的调试建议
-python python_read.py 你的文件.py --function 函数名 --debug
+# 调整并发任务数(适用于大型项目)
+python repo_read.py /path/to/repo --concurrency 8
 ```
 
-## 输出示例
+### 单文件分析
 
-### 分析报告
+如果只想分析单个文件:
+```bash
+python analyze_issue.py /path/to/your/file.py
+```
 
-生成的Markdown格式分析报告包含以下部分：
+### RAG增强分析
 
-1. **程序概述**：AI生成的代码整体功能和架构描述
-2. **导入模块概览**：以表格形式展示导入的模块及其主要功能
-3. **函数分析**：对每个函数的详细分析，包括：
-   - 函数签名
-   - 参数列表及类型
-   - 返回值类型
-   - 功能说明（AI生成）
-   - 原始文档字符串（如果有）
-   - 调用的其他函数
-   - 变量使用情况
-4. **潜在问题**：检测到的代码潜在问题列表
-5. **分析报告示例**: [使用该程序分析自己](./python_read_analysis.md)
+在生成基础报告后，可以使用RAG技术进一步分析:
+```bash
+python report_analyzer.py /path/to/analysis_directory
+```
 
-### 调试建议
+## 工作流程
 
-调试建议包含：
-- 建议的日志插入点
-- 函数参数的跟踪
-- 结果返回前的检查点
+1. **收集与规划 (Reasoning)**
+   - 扫描仓库中的所有Python文件
+   - 识别可能的入口点文件
+   - 基于文件特征分配优先级
 
-## 工作原理
+2. **分析执行 (Acting)**
+   - 并行分析各个Python文件
+   - 提取模块、函数和依赖信息
+   - 生成每个文件的分析报告和调试建议
 
-1. **源码解析**：使用Python的
+3. **综合报告 (Reflecting)**
+   - 构建模块和函数索引
+   - 创建依赖关系图
+   - 整合所有分析结果生成仓库概览
 
-ast
+## 输出内容
 
-模块解析源代码
-2. **模块信息收集**：收集导入模块的信息和函数文档
-3. **函数提取**：提取源文件中的所有函数定义
-4. **AI分析**：使用AI API分析函数功能并生成文档
-5. **变量与流程分析**：分析变量使用和函数调用关系
-6. **报告生成**：汇总所有信息生成Markdown格式的详细报告
+分析完成后，将在指定的输出目录(默认为`<repo_path>/_analysis`)中生成:
 
-## 使用场景
+- `<file>_analysis.md`: 每个文件的详细分析
+- `<file>_debug.md`: 每个文件的调试建议
+- `repo_overview.md`: 仓库概览报告
+- `repo_index.json`: 函数和模块索引
+- `analysis_log.md`: 分析过程日志
 
-- **代码审查**：快速理解大型项目或他人的代码
-- **文档生成**：为缺少文档的代码自动生成文档
-- **调试辅助**：获取有用的调试建议和代码流程分析
-- **教育用途**：学习和理解Python代码结构和最佳实践
+## 深度学习项目分析
 
-## 注意事项
+本工具特别适合分析AI生成的深度学习代码:
 
-- 需要有效的API密钥才能使用文档生成功能
-- 对于大型文件的分析可能需要更多的API调用，请注意API使用成本
-- 生成的文档质量依赖于AI模型的能力和使用的提示词
+- 识别常见深度学习框架(PyTorch, TensorFlow等)
+- 分析模型架构和层定义
+- 理解训练流程和优化方法
+- 检测神经网络实现中的潜在问题
+
+## 项目结构
+
+```
+repo_read/
+├── python_read.py     # 单文件代码分析
+├── analyze_issue.py   # 代码调试建议生成
+├── repo_read.py       # 仓库级分析协调
+├── report_analyzer.py # RAG增强分析
+└── requirements.txt   # 项目依赖
+```
+
+## 扩展与集成
+
+- **CI/CD集成**: 使用GitHub Actions自动分析PR
+- **VSCode扩展**: 在编辑器中查看分析结果
+- **自定义分析器**: 添加特定领域的分析逻辑
+
+## 贡献
+
+欢迎贡献！请先fork本项目，创建feature branch，再提交PR。
+
+## 许可证
+
+MIT
+
+---
+
+*注意: 本工具需要API密钥才能运行。分析质量取决于所使用的模型能力。*
