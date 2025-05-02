@@ -15,7 +15,7 @@ from analyze_issue import analyze_file_for_repo
 class RepoAnalyzer:
     """使用REACT方法的代码仓库分析器"""
     
-    def __init__(self, repo_path: str, output_dir: Optional[str] = None, max_concurrency: int = 5):
+    def __init__(self, repo_path: str, output_dir: Optional[str] = None, max_concurrency: int = 5, debug_mode: bool = False):
         """初始化仓库分析器
         
         Args:
@@ -26,6 +26,8 @@ class RepoAnalyzer:
         self.repo_path = os.path.abspath(repo_path)
         self.output_dir = output_dir or os.path.join(self.repo_path, "_analysis")
         self.max_concurrency = max_concurrency
+        self.debug_mode = debug_mode
+
         self.python_files = []
         self.analysis_results = {}
         self.file_dependency_graph = {}
@@ -164,7 +166,7 @@ class RepoAnalyzer:
                 self.log(f"开始分析: {rel_path}")
                 
                 # 使用analyze_issue.py中的函数进行分析
-                result = await analyze_file_for_repo(file_path)
+                result = await analyze_file_for_repo(file_path, debug=self.debug_mode)
                 
                 if result:
                     self.log(f"✓ 完成分析: {rel_path}")
@@ -188,7 +190,7 @@ class RepoAnalyzer:
             except Exception as e:
                 self.log(f"✗ 分析出错: {rel_path} - {str(e)}")
                 return None
-            
+        
     async def reflect_on_results(self):
         """反思阶段：生成综合报告和洞察"""
         self.log("## 反思阶段：生成综合报告\n")
@@ -320,6 +322,28 @@ class RepoAnalyzer:
             self.log(f"分析入口点文件: {os.path.basename(entry_file)}")
             # 这里可以添加更深入的入口点分析...
         
+        # 4. 使用AI生成仓库综合总结
+        if self.debug_mode:  # 仅在调试模式下生成AI总结，以节省API调用
+            self.log("### 使用AI生成仓库综合总结")
+            try:
+                # 导入repo_summary模块
+                import repo_summary
+                
+                # 调用repo_summary模块生成综合报告
+                summary_file = await repo_summary.generate_repo_summary(
+                    analysis_dir=self.output_dir,
+                    output_file=os.path.join(self.output_dir, "repo_ai_summary.md")
+                )
+                
+                if summary_file:
+                    self.log(f"AI生成的仓库综合总结已保存至: {summary_file}")
+                else:
+                    self.log("AI生成仓库总结失败")
+            except ImportError:
+                self.log("未找到repo_summary模块，跳过AI总结生成")
+            except Exception as e:
+                self.log(f"生成AI总结时出错: {str(e)}")
+        
         self.log("综合分析完成")
         
 async def main():
@@ -328,13 +352,15 @@ async def main():
     parser.add_argument("repo_path", help="要分析的代码仓库路径")
     parser.add_argument("--output", help="分析结果输出目录")
     parser.add_argument("--concurrency", type=int, default=5, help="最大并发分析任务数")
+    parser.add_argument("--debug", action="store_true", help="启用调试模式")
     
     args = parser.parse_args()
     
     analyzer = RepoAnalyzer(
         repo_path=args.repo_path,
         output_dir=args.output,
-        max_concurrency=args.concurrency
+        max_concurrency=args.concurrency,
+        debug_mode=args.debug
     )
     
     await analyzer.analyze_repo()

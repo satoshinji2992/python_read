@@ -17,7 +17,7 @@ client = openai.OpenAI(
     base_url=API_BASE_URL
 )
 
-async def analyze_and_debug_file(file_path, model_name=MODEL_NAME):
+async def analyze_and_debug_file(file_path, model_name=MODEL_NAME, debug=False):
     """分析单个Python文件并生成调试报告"""
     print(f"正在分析文件: {file_path}")
     
@@ -43,23 +43,31 @@ async def analyze_and_debug_file(file_path, model_name=MODEL_NAME):
         
         print(f"分析报告已保存至: {analysis_output_file}")
         
-        # 2. 使用分析结果生成调试报告
-        debug_report = await generate_debug_report(file_path, analyzer, analysis_report, import_time)
-        
-        # 保存调试报告
-        debug_output_file = f"{os.path.splitext(file_path)[0]}_debug.md"
-        with open(debug_output_file, 'w', encoding='utf-8') as f:
-            f.write(debug_report)
-        
-        print(f"调试报告已保存至: {debug_output_file}")
-        
-        return {
-            "analysis_file": analysis_output_file,
-            "debug_file": debug_output_file,
-            "analyzer": analyzer,
-            "analysis_report": analysis_report,
-            "debug_report": debug_report
-        }
+        if debug:
+            # 2. 使用分析结果生成调试报告
+            debug_report = await generate_debug_report(file_path, analyzer, analysis_report, import_time)
+            
+            # 保存调试报告
+            debug_output_file = f"{os.path.splitext(file_path)[0]}_debug.md"
+            with open(debug_output_file, 'w', encoding='utf-8') as f:
+                f.write(debug_report)
+            
+            print(f"调试报告已保存至: {debug_output_file}")
+            
+            return {
+                "analysis_file": analysis_output_file,
+                "debug_file": debug_output_file,
+                "analyzer": analyzer,
+                "analysis_report": analysis_report,
+                "debug_report": debug_report
+            }
+        else:
+            print("调试模式未启用，仅生成分析报告。")
+            return {
+                "analysis_file": analysis_output_file,
+                "analyzer": analyzer,
+                "analysis_report": analysis_report
+            }
     except Exception as e:
         print(f"分析过程中出错: {str(e)}")
         return None
@@ -147,21 +155,36 @@ async def generate_debug_report(file_path, analyzer, analysis_report, import_tim
 """
 
     try:
-        # 我们使用同步客户端来调用API
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
+        # 使用aiohttp进行异步API调用
+        import aiohttp
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}"
+        }
+        
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [
                 {"role": "system", "content": "你是一位精通Python的高级代码审查和调试专家。你擅长发现AI生成代码中的问题并提供实用的修复方案。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
-            max_tokens=3500
-        )
+            "temperature": 0.3,
+            "max_tokens": 3500
+        }
         
-        debug_content = response.choices[0].message.content
-        
-        # 生成完整的调试报告
-        debug_report = f"""# {filename} 调试报告
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{API_BASE_URL}/v1/chat/completions", 
+                headers=headers, 
+                json=payload
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    debug_content = result['choices'][0]['message']['content']
+                    
+                    # 生成完整的调试报告
+                    debug_report = f"""# {filename} 调试报告
 
 ## 文件信息
 - 文件名: {filename}
@@ -175,16 +198,20 @@ async def generate_debug_report(file_path, analyzer, analysis_report, import_tim
 ---
 *此调试报告基于代码分析和AI辅助生成。它提供了可能的问题和建议，但仍需开发者的专业判断。*
 """
-        return debug_report
+                    return debug_report
+                else:
+                    error_response = await response.text()
+                    raise Exception(f"API请求失败，状态码: {response.status}, 响应: {error_response}")
+                    
     except Exception as e:
         error_msg = f"生成调试报告时出错: {str(e)}"
         print(error_msg)
         return f"# {filename} 调试报告\n\n## 错误\n\n{error_msg}\n\n请确保API密钥正确设置并检查网络连接。"
 
 # 供其他模块调用的函数
-async def analyze_file_for_repo(file_path, model_name=MODEL_NAME):
+async def analyze_file_for_repo(file_path, model_name=MODEL_NAME, debug=False):
     """供repo_read.py调用的文件分析函数"""
-    return await analyze_and_debug_file(file_path, model_name)
+    return await analyze_and_debug_file(file_path, model_name, debug)
 
 # 独立运行的入口点
 async def run_analysis(file_path, model_name=MODEL_NAME):
