@@ -323,26 +323,25 @@ class RepoAnalyzer:
             # 这里可以添加更深入的入口点分析...
         
         # 4. 使用AI生成仓库综合总结
-        if self.debug_mode:  # 仅在调试模式下生成AI总结，以节省API调用
-            self.log("### 使用AI生成仓库综合总结")
-            try:
-                # 导入repo_summary模块
-                import repo_summary
-                
-                # 调用repo_summary模块生成综合报告
-                summary_file = await repo_summary.generate_repo_summary(
-                    analysis_dir=self.output_dir,
-                    output_file=os.path.join(self.output_dir, "repo_ai_summary.md")
-                )
-                
-                if summary_file:
-                    self.log(f"AI生成的仓库综合总结已保存至: {summary_file}")
-                else:
-                    self.log("AI生成仓库总结失败")
-            except ImportError:
-                self.log("未找到repo_summary模块，跳过AI总结生成")
-            except Exception as e:
-                self.log(f"生成AI总结时出错: {str(e)}")
+        self.log("### 使用AI生成仓库综合总结")
+        try:
+            # 导入repo_summary模块
+            import repo_summary
+            
+            # 调用repo_summary模块生成综合报告
+            summary_file = await repo_summary.generate_repo_summary(
+                analysis_dir=self.output_dir,
+                output_file=os.path.join(self.output_dir, "repo_ai_summary.md")
+            )
+            
+            if summary_file:
+                self.log(f"AI生成的仓库综合总结已保存至: {summary_file}")
+            else:
+                self.log("AI生成仓库总结失败")
+        except ImportError:
+            self.log("未找到repo_summary模块，跳过AI总结生成")
+        except Exception as e:
+            self.log(f"生成AI总结时出错: {str(e)}")
         
         self.log("综合分析完成")
         
